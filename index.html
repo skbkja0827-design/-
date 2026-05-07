@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>인원 현황 자동 집계 도구</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;700&display=swap" rel="stylesheet"/>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Noto Sans KR',sans-serif;background:#f4f6f9;color:#222}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px}
+.header{background:#1e3a5f;color:#fff;border-radius:10px;padding:16px 24px;margin-bottom:24px}
+.header h1{font-size:18px;font-weight:700}
+.header p{font-size:12px;margin-top:4px;opacity:.8}
+.card{background:#fff;border-radius:10px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08);margin-bottom:20px}
+.upload-area{text-align:center;padding:40px 20px}
+.upload-area .icon{font-size:42px;margin-bottom:12px}
+.upload-area .desc{font-size:15px;color:#444;margin-bottom:12px}
+.settings{display:flex;justify-content:center;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:20px}
+.settings span{font-size:13px;color:#555}
+.settings button{padding:5px 14px;border-radius:6px;border:1px solid #bbb;background:#fff;color:#333;cursor:pointer;font-size:13px;font-family:inherit}
+.settings button.active{background:#1e3a5f;color:#fff;border-color:#1e3a5f}
+.file-btn{cursor:pointer;background:#1e3a5f;color:#fff;padding:11px 30px;border-radius:8px;font-size:14px;font-weight:600;display:inline-block;font-family:inherit}
+.file-btn input{display:none}
+.note{margin-top:16px;font-size:12px;color:#888;line-height:1.6}
+.error{margin-top:16px;background:#fff1f0;border:1px solid #ffa39e;border-radius:8px;padding:12px 16px;font-size:13px;color:#a8071a;text-align:left;white-space:pre-wrap}
+.result-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px}
+.result-header .total{font-size:15px;font-weight:700}
+.result-header .total b{color:#1e3a5f;font-size:18px}
+.btn{padding:7px 16px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer;font-size:12px;font-family:inherit}
+.section{margin-bottom:28px}
+.section-title{font-weight:700;font-size:14px;margin-bottom:10px;color:#1e3a5f}
+table{border-collapse:collapse;font-size:13px;width:100%}
+thead tr{background:#1e3a5f;color:#fff}
+th{padding:8px 12px;text-align:center;border:1px solid #c5d5e8;white-space:nowrap;font-weight:600}
+td{padding:6px 12px;border:1px solid #dce6f0;white-space:nowrap}
+.num{text-align:center}
+.bold{font-weight:700}
+tbody tr:nth-child(even){background:#f7f9fc}
+.sum-row{background:#e8eef6 !important;font-weight:700}
+.overflow{overflow-x:auto}
+.warn{margin-top:16px;background:#fffbe6;border:1px solid #ffe58f;border-radius:8px;padding:12px 16px;font-size:12px}
+.warn b{display:block;margin-bottom:6px}
+.warn table{font-size:12px}
+.warn th{background:#f5f0dc;border-color:#e8ddb5;padding:4px 8px}
+.warn td{border-color:#e8ddb5;padding:3px 8px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useRef}=React;
+
+const COL={seq:"연번",dept:"부서",dept2:"부서2",dept3:"부서3",task:"담당업무",gender:"성별",disability:"장애유형",grade:"직급",title:"직위(직책)",empType:"고용형태",payband:"payband(26)",tenure:"재직기간"};
+
+const GRADE_MAP={
+  G1:"본부장",G2:"부장",G3:"과장",G4:"대리",G5:"간사",G6:"간사",
+  g1:"본부장",g2:"부장",g3:"과장",g4:"대리",g5:"간사",g6:"간사",
+  "1급":"본부장","2급":"부장","3급":"과장","4급":"대리","5급":"간사","6급":"간사",
+  "본부장":"본부장","부장":"부장","과장":"과장","대리":"대리","간사":"간사","간사(스페셜)":"간사","시설장":"본부장",
+  "임원":"임원","지부장":"지부장","기타":"기타","소장":"소장","관리직":"관리직",
+};
+const GRADE_ORDER=["임원","지부장","본부장","소장","부장","관리직","과장","대리","간사","기타"];
+
+function extractGrade(r){const g=r.match(/^(G\d)/i);if(g)return g[1].toUpperCase();const n=r.match(/^(\d급)/);if(n)return n[1];return null;}
+function normalizeEmpType(v){const t=(v||"").trim();if(!t)return"(없음)";if(t==="정규직")return"정규직";return"계약직";}
+function normalizeGrade(grade,empType){
+  const g=(grade||"").trim(),t=normalizeEmpType(empType);
+  if(!g)return t==="계약직"?"간사":"(미분류)";
+  if(GRADE_MAP[g])return GRADE_MAP[g];
+  const code=extractGrade(g);
+  if(code&&GRADE_MAP[code])return GRADE_MAP[code];
+  return g;
+}
+
+function SimpleTable({title,data,rowKey,label,order}){
+  const m={};data.forEach(r=>{const v=r[rowKey]||"(없음)";m[v]=(m[v]||0)+1;});
+  const o=order?order.filter(k=>m[k]):[];
+  const rest=Object.keys(m).filter(k=>!o.includes(k)).sort();
+  const all=[...o,...rest];
+  const total=all.reduce((s,k)=>s+m[k],0);
+  return(
+    <div className="section"><div className="section-title">{title}</div>
+    <table style={{minWidth:200,width:"auto"}}><thead><tr><th>{label}</th><th>인원</th></tr></thead>
+    <tbody>{all.map(k=><tr key={k}><td>{k}</td><td className="num">{m[k]}</td></tr>)}
+    <tr className="sum-row"><td>합계</td><td className="num">{total}</td></tr></tbody></table></div>
+  );
+}
+
+function CrossTable({title,data,rowKey,colKey,rowLabel,rowOrder}){
+  const rows={},cols=new Set();
+  data.forEach(r=>{const rv=r[rowKey]||"(없음)",cv=r[colKey]||"(없음)";cols.add(cv);if(!rows[rv])rows[rv]={};rows[rv][cv]=(rows[rv][cv]||0)+1;});
+  const ca=[...cols].sort();
+  const o=rowOrder?rowOrder.filter(r=>rows[r]):[];
+  const rest=Object.keys(rows).filter(k=>!o.includes(k)).sort();
+  const rk=[...o,...rest];
+  const total=rk.reduce((s,r)=>s+ca.reduce((s2,c)=>s2+(rows[r]?.[c]||0),0),0);
+  return(
+    <div className="section"><div className="section-title">{title}</div>
+    <div className="overflow"><table><thead><tr><th>{rowLabel}</th>{ca.map(c=><th key={c}>{c}</th>)}<th>합계</th></tr></thead>
+    <tbody>{rk.map(r=>{const rt=ca.reduce((s,c)=>s+(rows[r]?.[c]||0),0);return(
+      <tr key={r}><td>{r}</td>{ca.map(c=><td key={c} className="num">{rows[r]?.[c]||0}</td>)}<td className="num bold">{rt}</td></tr>
+    );})}
+    <tr className="sum-row"><td>합계</td>{ca.map(c=><td key={c} className="num">{rk.reduce((s,r)=>s+(rows[r]?.[c]||0),0)}</td>)}<td className="num">{total}</td></tr>
+    </tbody></table></div></div>
+  );
+}
+
+function App(){
+  const[processed,setProcessed]=useState(null);
+  const[excluded,setExcluded]=useState([]);
+  const[error,setError]=useState("");
+  const[encoding,setEncoding]=useState("UTF-8");
+  const[skipRows,setSkipRows]=useState(0);
+  const lastFile=useRef(null);
+
+  const parseAndProcess=(file,enc,skip)=>{
+    setError("");
+    Papa.parse(file,{header:false,skipEmptyLines:true,encoding:enc,complete:res=>{
+      const all=res.data,hdr=all[skip]||[],body=all.slice(skip+1);
+      const fields=hdr.map((h,i)=>(h||"").toString().trim()||("_col"+i));
+      const missing=["연번","직급","고용형태","성별"].filter(c=>!fields.includes(c));
+      if(missing.length){setError("컬럼을 찾을 수 없습니다: "+missing.join(", ")+"\n현재 인식된 컬럼: "+fields.join(", ")+"\n인코딩 또는 헤더 행 위치를 조정해 보세요.");setProcessed(null);return;}
+      const mapped=body.map(row=>{const obj={};fields.forEach((f,i)=>{obj[f]=(row[i]||"").toString().trim();});return obj;});
+      const dataRows=mapped.filter(r=>{const s=(r[COL.seq]||"").trim();return s&&!isNaN(s);});
+      const exc=dataRows.filter(r=>!(r[COL.empType]||"").trim());
+      const valid=dataRows.filter(r=>(r[COL.empType]||"").trim());
+      setExcluded(exc.map(r=>({seq:r[COL.seq],dept:r[COL.dept],dept2:r[COL.dept2],grade:r[COL.grade],title:r[COL.title]})));
+      setProcessed(valid.map(r=>({empType:normalizeEmpType(r[COL.empType]),grade:normalizeGrade(r[COL.grade],r[COL.empType]),gender:(r[COL.gender]||"").trim()||"(없음)",dept:(r[COL.dept]||"").trim()||"(없음)"})));
+    }});
+  };
+
+  const handleFile=e=>{const f=e.target.files[0];if(!f)return;lastFile.current=f;parseAndProcess(f,encoding,skipRows);};
+  const retry=(enc,skip)=>{const e2=enc!==undefined?enc:encoding,s2=skip!==undefined?skip:skipRows;if(enc!==undefined)setEncoding(e2);if(skip!==undefined)setSkipRows(s2);if(lastFile.current)parseAndProcess(lastFile.current,e2,s2);};
+
+  return(
+    <div className="wrap">
+      <div className="header"><h1>인원 현황 자동 집계 도구</h1><p>밀알복지재단 인재경영실 · 인사기획팀</p></div>
+
+      {!processed&&(
+        <div className="card">
+          <div className="upload-area">
+            <div className="icon">📂</div>
+            <div className="desc">인사 데이터 CSV 파일을 업로드하세요</div>
+            <div className="settings">
+              <span>인코딩:</span>
+              {["UTF-8","EUC-KR"].map(e=><button key={e} className={encoding===e?"active":""} onClick={()=>{setEncoding(e);if(lastFile.current)retry(e,undefined);}}>{e}</button>)}
+              <span style={{marginLeft:12}}>헤더 행:</span>
+              {[0,1,2,3].map(n=><button key={n} className={skipRows===n?"active":""} onClick={()=>{setSkipRows(n);if(lastFile.current)retry(undefined,n);}}>{n+1}행</button>)}
+            </div>
+            <label className="file-btn">파일 선택<input type="file" accept=".csv" onChange={handleFile}/></label>
+            <div className="note">
+              ※ 고정 컬럼: 연번·부서·성별·직급·고용형태<br/>
+              ※ 연번이 숫자인 행만 집계 · 고용형태 공란 행은 제외<br/>
+              ※ 엑셀: 다른 이름으로 저장 → CSV UTF-8(쉼표로 분리)
+            </div>
+            {error&&<div className="error">{error}</div>}
+          </div>
+        </div>
+      )}
+
+      {processed&&(
+        <div className="card">
+          <div className="result-header">
+            <div className="total">집계 결과 · 총 <b>{processed.length}</b>명</div>
+            <button className="btn" onClick={()=>{setProcessed(null);setExcluded([]);setError("");lastFile.current=null;}}>새 파일 업로드</button>
+          </div>
+          <SimpleTable title="① 고용형태별 인원" data={processed} rowKey="empType" label="고용형태"/>
+          <SimpleTable title="② 직급별 인원" data={processed} rowKey="grade" label="직급" order={GRADE_ORDER}/>
+          <CrossTable title="③ 부서별 정규직/계약직" data={processed} rowKey="dept" colKey="empType" rowLabel="부서"/>
+          <CrossTable title="④ 고용형태 × 직급" data={processed} rowKey="empType" colKey="grade" rowLabel="고용형태"/>
+          <CrossTable title="⑤ 직급 × 성별" data={processed} rowKey="grade" colKey="gender" rowLabel="직급" rowOrder={GRADE_ORDER}/>
+          <CrossTable title="⑥ 고용형태 × 성별" data={processed} rowKey="empType" colKey="gender" rowLabel="고용형태"/>
+          {excluded.length>0&&(
+            <div className="warn">
+              <b>⚠ 고용형태 없음으로 제외된 행: {excluded.length}건</b>
+              <table><thead><tr><th>연번</th><th>부서</th><th>부서2</th><th>직급</th><th>직위(직책)</th></tr></thead>
+              <tbody>{excluded.map((r,i)=><tr key={i}><td>{r.seq}</td><td>{r.dept}</td><td>{r.dept2}</td><td>{r.grade}</td><td>{r.title}</td></tr>)}</tbody></table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
